@@ -37,6 +37,7 @@ export interface Civilization {
 	territories: Vector2[];
 	age: number;
 	birthRate: number;
+	mortalityRate: number; // Taxa de mortalidade da população
 	conflictCount: number;
 	resourceEfficiency: number;
 	territoryResources: { [territoryKey: string]: number };

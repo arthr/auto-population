@@ -24,7 +24,7 @@ export const GLOBAL_MAX_POPULATION = 50000000; // Limite máximo global de popul
 
 // Constantes para sistema de recursos
 export const MAX_RESOURCES_PER_TERRITORY = 5000; // Recursos máximos por território
-export const BASE_TERRITORY_PRODUCTION = 10; // Produção base de recursos por território
+export const BASE_TERRITORY_PRODUCTION = 100; // Produção base de recursos por território
 export const RESOURCE_CONSUMPTION_PER_1000_POP = 2; // Consumo de recursos por 1000 habitantes
 export const RESOURCE_DEPLETION_RATE = 0.02; // Taxa de esgotamento de recursos por território por turno
 
@@ -182,6 +182,7 @@ export const createCivilization = (
 		territories: [position],
 		age: 0,
 		birthRate: 0.03, // Taxa de natalidade inicial mais realista (3%)
+		mortalityRate: 0.015, // Taxa de mortalidade inicial (1.5%)
 		conflictCount: 0, // Sem conflitos iniciais
 		resourceEfficiency: 1.0, // Nova propriedade: eficiência de produção/consumo de recursos
 		territoryResources: {
@@ -261,27 +262,96 @@ export const updateCivilization = (
 		GLOBAL_MAX_POPULATION
 	);
 
-	// Calcular crescimento da população usando um modelo logístico
+	// CÁLCULO DA TAXA DE NATALIDADE EFETIVA
 	// A taxa diminui à medida que a civilização fica mais avançada (modelando taxa de fertilidade mais baixa em sociedades modernas)
 	const modernizationFactor = 1 - newCiv.stage * 0.05;
 
 	// Fator de densidade populacional (diminui o crescimento quando se aproxima da capacidade)
 	const densityFactor = Math.max(0, 1 - newCiv.population / carryingCapacity);
 
-	// Taxa efetiva de crescimento
-	const effectiveGrowthRate =
-		newCiv.birthRate * modernizationFactor * densityFactor;
+	// Fator de recursos (escassez afeta negativamente a natalidade)
+	const resourceFactor = Math.min(
+		1,
+		newCiv.resourceLevel / (newCiv.population / 1000) / 10
+	);
 
-	// Aplicar taxa de crescimento populacional usando o modelo logístico
-	// Crescimento é proporcional à população atual e ao espaço disponível
-	// Quando a população se aproxima da capacidade de suporte, o crescimento desacelera
-	const populationGrowth = Math.floor(
-		newCiv.population * effectiveGrowthRate
+	// Taxa efetiva de natalidade
+	const effectiveBirthRate =
+		newCiv.birthRate * modernizationFactor * densityFactor * resourceFactor;
+
+	// CÁLCULO DA TAXA DE MORTALIDADE EFETIVA
+	// Base da mortalidade que diminui com o avanço tecnológico
+	const baseMortalityReduction = newCiv.stage * 0.15; // Redução de até 60% no estágio moderno
+
+	// Fator de recursos (escassez aumenta a mortalidade)
+	const resourceMortalityFactor = Math.max(
+		1,
+		1.5 - newCiv.resourceLevel / (newCiv.population / 500)
 	);
-	newCiv.population = Math.min(
-		newCiv.population + populationGrowth,
-		carryingCapacity
+
+	// Fator de conflitos (mais conflitos = maior mortalidade)
+	const recentConflictFactor = Math.min(2, 1 + newCiv.conflictCount * 0.001);
+
+	// Fator de superpopulação (mortalidade aumenta se próximo da capacidade máxima)
+	const overpopulationFactor =
+		newCiv.population > carryingCapacity * 0.8
+			? 1 + (newCiv.population / carryingCapacity - 0.8) * 2
+			: 1;
+
+	// Taxa efetiva de mortalidade
+	const effectiveMortalityRate = Math.max(
+		0.005, // Mínimo de 0.5% mesmo em condições ideais
+		newCiv.mortalityRate *
+			(1 - baseMortalityReduction) *
+			resourceMortalityFactor *
+			recentConflictFactor *
+			overpopulationFactor
 	);
+
+	// CÁLCULO DA ALTERAÇÃO DE POPULAÇÃO
+	// Crescimento populacional (nascimentos)
+	const populationGrowth = Math.floor(newCiv.population * effectiveBirthRate);
+
+	// Declínio populacional (mortes)
+	const populationDecline = Math.floor(
+		newCiv.population * effectiveMortalityRate
+	);
+
+	// Alteração líquida na população
+	const netPopulationChange = populationGrowth - populationDecline;
+
+	// Atualizar população com limite na capacidade de suporte
+	newCiv.population = Math.max(
+		1, // Garantir ao menos 1 habitante para evitar extinção completa
+		Math.min(
+			newCiv.population + netPopulationChange,
+			carryingCapacity // Limite baseado no território e tecnologia
+		)
+	);
+
+	// Atualizar as taxas de natalidade e mortalidade de base para a próxima iteração
+	// (pequenos ajustes que refletem mudanças culturais e ambientais ao longo do tempo)
+
+	// Para natalidade: tende a diminuir com o progresso, mas flutua conforme outros fatores
+	if (resourceFactor < 0.8 || densityFactor < 0.7) {
+		// Condições difíceis: declínio na taxa de natalidade de base
+		newCiv.birthRate = Math.max(0.01, newCiv.birthRate * 0.99);
+	} else if (newCiv.resourceProduction > newCiv.resourceConsumption * 1.5) {
+		// Prosperidade: leve aumento na taxa de natalidade
+		newCiv.birthRate = Math.min(0.04, newCiv.birthRate * 1.01);
+	}
+
+	// Para mortalidade: tende a diminuir com o progresso, mas aumenta com conflitos prolongados
+	if (recentConflictFactor > 1.3) {
+		// Muitos conflitos recentes: aumenta taxa de mortalidade base
+		newCiv.mortalityRate = Math.min(0.03, newCiv.mortalityRate * 1.02);
+	} else if (resourceMortalityFactor > 1.2) {
+		// Escassez de recursos: aumenta taxa de mortalidade base
+		newCiv.mortalityRate = Math.min(0.025, newCiv.mortalityRate * 1.01);
+	} else {
+		// Progresso natural: diminui levemente a taxa de mortalidade base ao longo do tempo
+		newCiv.mortalityRate = Math.max(0.005, newCiv.mortalityRate * 0.995);
+	}
 
 	// ATUALIZAÇÃO DO SISTEMA DE RECURSOS
 	// 1. Calcular o limite máximo de recursos baseado no território

@@ -64,6 +64,7 @@ export function WorldMap() {
 		territories: number;
 		resourceLevel: number;
 		birthRate: number;
+		mortalityRate: number;
 		conflictCount: number;
 		resourceProduction: number;
 		resourceConsumption: number;
@@ -126,6 +127,7 @@ export function WorldMap() {
 			territories: civ.size,
 			resourceLevel: civ.resourceLevel,
 			birthRate: civ.birthRate,
+			mortalityRate: civ.mortalityRate,
 			conflictCount: civ.conflictCount,
 			resourceProduction: civ.resourceProduction,
 			resourceConsumption: civ.resourceConsumption,
@@ -497,6 +499,40 @@ export function WorldMap() {
 											fontWeight: "bold",
 										}}>
 										{(capital.birthRate * 100).toFixed(1)}%
+									</div>
+
+									<div>Mortalidade:</div>
+									<div
+										style={{
+											textAlign: "right",
+											fontWeight: "bold",
+										}}>
+										{(capital.mortalityRate * 100).toFixed(
+											1
+										)}
+										%
+									</div>
+
+									<div>Crescimento:</div>
+									<div
+										style={{
+											textAlign: "right",
+											fontWeight: "bold",
+											color:
+												capital.birthRate >
+												capital.mortalityRate
+													? "#4ade80"
+													: capital.birthRate <
+													  capital.mortalityRate
+													? "#ef4444"
+													: "#ffffff",
+										}}>
+										{(
+											(capital.birthRate -
+												capital.mortalityRate) *
+											100
+										).toFixed(1)}
+										%
 									</div>
 
 									<div>Conflitos:</div>
