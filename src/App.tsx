@@ -5,7 +5,7 @@ function App() {
 		<div className="w-screen h-screen overflow-hidden">
 			<CivilizationSimulation
 				initialCivilizationsCount={5}
-				tickSpeed={1000}
+				tickSpeed={100}
 			/>
 		</div>
 	);

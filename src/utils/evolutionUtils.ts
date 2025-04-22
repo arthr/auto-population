@@ -246,6 +246,14 @@ export const getAvailableNeighbors = (
 	return neighbors;
 };
 
+// Função para calcular o quadrado da distância euclidiana entre dois pontos
+// É mais eficiente que Math.sqrt para comparações
+export const distanceSquared = (a: Vector2, b: Vector2): number => {
+	const dx = a[0] - b[0];
+	const dy = a[1] - b[1];
+	return dx * dx + dy * dy;
+};
+
 // Calcula o bônus de recursos com base nas fontes de recursos descobertas
 export const calculateResourceBonus = (
 	civ: Civilization,
@@ -629,18 +637,18 @@ export const updateExpansion = (
 		// (para adicionar variedade nas escolhas de expansão)
 		const closestResources = undiscoveredResources
 			.map((source) => {
-				// Encontrar distância mínima a qualquer território atual
-				let minDist = Infinity;
+				// Encontrar distância mínima ao quadrado a qualquer território atual
+				let minDistSquared = Infinity;
 				for (const territory of newCiv.territories) {
-					const dist = Math.sqrt(
-						Math.pow(territory[0] - source.position[0], 2) +
-							Math.pow(territory[1] - source.position[1], 2)
+					const distSquared = distanceSquared(
+						territory,
+						source.position
 					);
-					minDist = Math.min(minDist, dist);
+					minDistSquared = Math.min(minDistSquared, distSquared);
 				}
-				return { source, distance: minDist };
+				return { source, distanceSquared: minDistSquared };
 			})
-			.sort((a, b) => a.distance - b.distance)
+			.sort((a, b) => a.distanceSquared - b.distanceSquared)
 			.slice(0, Math.min(3, undiscoveredResources.length));
 
 		// Escolher um recurso aleatoriamente entre os mais próximos
@@ -651,16 +659,16 @@ export const updateExpansion = (
 
 		// Encontrar o melhor vizinho para chegar a este recurso
 		let bestNeighbor = null;
-		let bestDistance = Infinity;
+		let bestDistanceSquared = Infinity;
 
 		for (const neighbor of availableNeighbors) {
-			const distance = Math.sqrt(
-				Math.pow(neighbor[0] - targetResource.position[0], 2) +
-					Math.pow(neighbor[1] - targetResource.position[1], 2)
+			const distSquared = distanceSquared(
+				neighbor,
+				targetResource.position
 			);
 
-			if (distance < bestDistance) {
-				bestDistance = distance;
+			if (distSquared < bestDistanceSquared) {
+				bestDistanceSquared = distSquared;
 				bestNeighbor = neighbor;
 			}
 		}

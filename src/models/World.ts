@@ -14,6 +14,7 @@ import {
 	MAX_RESOURCES_PER_TERRITORY,
 	updateSpatialHashes,
 	updateOccupiedPositionsCache,
+	distanceSquared,
 } from "../utils/evolutionUtils";
 
 export class World {
@@ -92,6 +93,8 @@ export class World {
 	// Gera fontes de recursos aleatórias no mapa
 	private generateResourceSources(): void {
 		const MIN_DISTANCE_BETWEEN_SOURCES = 5; // Distância mínima entre fontes de recursos
+		const MIN_DISTANCE_SQUARED =
+			MIN_DISTANCE_BETWEEN_SOURCES * MIN_DISTANCE_BETWEEN_SOURCES;
 
 		for (let i = 0; i < this.resourceSourcesCount; i++) {
 			let position: Vector2;
@@ -106,11 +109,11 @@ export class World {
 
 				// Verificar distância das outras fontes
 				for (const source of this.resourceSources) {
-					const dist = Math.sqrt(
-						Math.pow(position[0] - source.position[0], 2) +
-							Math.pow(position[1] - source.position[1], 2)
+					const distSquared = distanceSquared(
+						position,
+						source.position
 					);
-					if (dist < MIN_DISTANCE_BETWEEN_SOURCES) {
+					if (distSquared < MIN_DISTANCE_SQUARED) {
 						isTooClose = true;
 						break;
 					}
@@ -201,15 +204,18 @@ export class World {
 				// Pular se a civilização já descobriu esta fonte
 				if (civ.discoveredSources.includes(sourceIndex)) return;
 
+				// Calcular o quadrado do raio para comparações eficientes
+				const radiusSquared = source.radius * source.radius;
+
 				// Verificar cada território da civilização
 				for (const territory of civ.territories) {
-					const distance = Math.sqrt(
-						Math.pow(territory[0] - source.position[0], 2) +
-							Math.pow(territory[1] - source.position[1], 2)
+					const distSquared = distanceSquared(
+						territory,
+						source.position
 					);
 
-					// Se dentro do raio, marcar como descoberta
-					if (distance <= source.radius) {
+					// Se dentro do raio ao quadrado, marcar como descoberta
+					if (distSquared <= radiusSquared) {
 						source.discovered = true;
 						civ.discoveredSources.push(sourceIndex);
 
@@ -542,6 +548,10 @@ export class World {
 			// Conjunto para armazenar civilizações próximas à fonte
 			const nearbyCivilizations = new Set<number>();
 
+			// Calcular o quadrado do raio aumentado para comparações
+			const extendedRadiusSquared =
+				source.radius * 1.5 * (source.radius * 1.5);
+
 			this.civilizations.forEach((civ) => {
 				if (civ.discoveredSources.includes(sourceIndex)) {
 					sourceHasOwner = true;
@@ -549,12 +559,12 @@ export class World {
 
 				// Verificar se a civilização está próxima à fonte
 				for (const territory of civ.territories) {
-					const distance = Math.sqrt(
-						Math.pow(territory[0] - source.position[0], 2) +
-							Math.pow(territory[1] - source.position[1], 2)
+					const distSquared = distanceSquared(
+						territory,
+						source.position
 					);
 
-					if (distance <= source.radius * 1.5) {
+					if (distSquared <= extendedRadiusSquared) {
 						nearbyCivilizations.add(civ.id);
 						break;
 					}
