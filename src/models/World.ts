@@ -12,6 +12,8 @@ import {
 	isPositionFree,
 	updateCivilization,
 	MAX_RESOURCES_PER_TERRITORY,
+	updateSpatialHashes,
+	updateOccupiedPositionsCache,
 } from "../utils/evolutionUtils";
 
 export class World {
@@ -149,6 +151,12 @@ export class World {
 		if (!this.isRunning) return;
 
 		this.tickCount++;
+
+		// Atualizar os spatial hashes para otimizar buscas espaciais
+		updateSpatialHashes(this.civilizations, this.resourceSources);
+
+		// Atualizar cache de posições ocupadas
+		updateOccupiedPositionsCache(this.civilizations);
 
 		// Atualizar cada civilização, passando as fontes de recursos
 		this.civilizations = this.civilizations.map((civ) =>

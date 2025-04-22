@@ -28,6 +28,128 @@ export const BASE_TERRITORY_PRODUCTION = 100; // Produção base de recursos por
 export const RESOURCE_CONSUMPTION_PER_1000_POP = 2; // Consumo de recursos por 1000 habitantes
 export const RESOURCE_DEPLETION_RATE = 0.02; // Taxa de esgotamento de recursos por território por turno
 
+// Requisitos de população para cada estágio
+const STAGE_POPULATION_REQUIREMENTS = [
+	0, // PRIMITIVE: não há requisito
+	5000, // AGRICULTURAL: 5.000 habitantes
+	20000, // MEDIEVAL: 20.000 habitantes
+	100000, // INDUSTRIAL: 100.000 habitantes
+	500000, // MODERN: 500.000 habitantes
+];
+
+// Requisitos de recursos para cada estágio
+const STAGE_RESOURCE_REQUIREMENTS = [
+	0, // PRIMITIVE: não há requisito
+	500, // AGRICULTURAL: 500 recursos
+	2000, // MEDIEVAL: 2.000 recursos
+	10000, // INDUSTRIAL: 10.000 recursos
+	50000, // MODERN: 50.000 recursos
+];
+
+// Requisitos de idade para cada estágio (em turnos)
+const STAGE_AGE_REQUIREMENTS = [
+	0, // PRIMITIVE: não há requisito
+	30, // AGRICULTURAL: 30 turnos
+	100, // MEDIEVAL: 100 turnos
+	200, // INDUSTRIAL: 200 turnos
+	350, // MODERN: 350 turnos
+];
+
+// Tamanho da célula para spatial hashing
+const SPATIAL_CELL_SIZE = 5;
+
+// Cache global de posições ocupadas
+const occupiedPositionsCache = new Set<string>();
+
+// Função para atualizar o cache de posições ocupadas
+export const updateOccupiedPositionsCache = (
+	civilizations: Civilization[]
+): void => {
+	occupiedPositionsCache.clear();
+
+	civilizations.forEach((civ) => {
+		civ.territories.forEach((territory) => {
+			occupiedPositionsCache.add(`${territory[0]},${territory[1]}`);
+		});
+	});
+};
+
+// Classe para gerenciar o spatial hashing
+class SpatialHash {
+	private grid: Map<string, number[]> = new Map();
+
+	constructor() {
+		this.clear();
+	}
+
+	// Limpar o grid
+	clear(): void {
+		this.grid.clear();
+	}
+
+	// Converter posição para chave de célula
+	private getCellKey(pos: Vector2): string {
+		const cellX = Math.floor(pos[0] / SPATIAL_CELL_SIZE);
+		const cellY = Math.floor(pos[1] / SPATIAL_CELL_SIZE);
+		return `${cellX},${cellY}`;
+	}
+
+	// Adicionar entidade à hash
+	add(pos: Vector2, id: number): void {
+		const key = this.getCellKey(pos);
+		if (!this.grid.has(key)) {
+			this.grid.set(key, []);
+		}
+		this.grid.get(key)!.push(id);
+	}
+
+	// Obter entidades próximas a uma posição
+	getNearby(pos: Vector2, radius: number = 1): number[] {
+		const result = new Set<number>();
+		const centerCellX = Math.floor(pos[0] / SPATIAL_CELL_SIZE);
+		const centerCellY = Math.floor(pos[1] / SPATIAL_CELL_SIZE);
+		const cellRadius = Math.ceil(radius / SPATIAL_CELL_SIZE);
+
+		// Verificar células vizinhas dentro do raio especificado
+		for (let dx = -cellRadius; dx <= cellRadius; dx++) {
+			for (let dy = -cellRadius; dy <= cellRadius; dy++) {
+				const key = `${centerCellX + dx},${centerCellY + dy}`;
+				if (this.grid.has(key)) {
+					this.grid.get(key)!.forEach((id) => result.add(id));
+				}
+			}
+		}
+
+		return Array.from(result);
+	}
+}
+
+// Instância singleton para spatial hashing
+const spatialHashCivs = new SpatialHash();
+const spatialHashResources = new SpatialHash();
+
+// Função para atualizar os spatial hashes
+export const updateSpatialHashes = (
+	civilizations: Civilization[],
+	resourceSources: ResourceSource[]
+): void => {
+	// Limpar hashes
+	spatialHashCivs.clear();
+	spatialHashResources.clear();
+
+	// Adicionar civilizações
+	civilizations.forEach((civ) => {
+		civ.territories.forEach((pos) => {
+			spatialHashCivs.add(pos, civ.id);
+		});
+	});
+
+	// Adicionar fontes de recursos
+	resourceSources.forEach((source, index) => {
+		spatialHashResources.add(source.position, index);
+	});
+};
+
 // Função para gerar uma cor aleatória
 export const getRandomColor = (): string => {
 	return `#${Math.floor(Math.random() * 16777215)
@@ -55,14 +177,18 @@ export const isPositionFree = (
 	pos: Vector2,
 	civilizations: Civilization[]
 ): boolean => {
-	return !civilizations.some((civ) =>
-		civ.territories.some(
-			(territory) => territory[0] === pos[0] && territory[1] === pos[1]
-		)
-	);
+	const posKey = `${pos[0]},${pos[1]}`;
+
+	// Se o cache estiver vazio, inicializá-lo
+	if (occupiedPositionsCache.size === 0) {
+		updateOccupiedPositionsCache(civilizations);
+	}
+
+	// Verificar no cache - operação O(1)
+	return !occupiedPositionsCache.has(posKey);
 };
 
-// Obtém posições vizinhas disponíveis
+// Obtém posições vizinhas disponíveis (versão otimizada)
 export const getAvailableNeighbors = (
 	civ: Civilization,
 	civilizations: Civilization[]
@@ -79,19 +205,40 @@ export const getAvailableNeighbors = (
 	];
 
 	const neighbors: Vector2[] = [];
+	const checkedPositions = new Set<string>();
 
-	civ.territories.forEach((territory) => {
+	// Se o cache estiver vazio, inicializá-lo
+	if (occupiedPositionsCache.size === 0) {
+		updateOccupiedPositionsCache(civilizations);
+	}
+
+	// Limitar a verificação a apenas 5 territórios aleatórios se a civ for grande
+	const territoriesToCheck =
+		civ.territories.length > 20
+			? civ.territories.sort(() => 0.5 - Math.random()).slice(0, 20)
+			: civ.territories;
+
+	territoriesToCheck.forEach((territory) => {
 		directions.forEach((dir) => {
 			const newPos: Vector2 = [
 				territory[0] + dir[0],
 				territory[1] + dir[1],
 			];
-			if (
-				isWithinBounds(newPos) &&
-				isPositionFree(newPos, civilizations) &&
-				!neighbors.some((n) => n[0] === newPos[0] && n[1] === newPos[1])
-			) {
-				neighbors.push(newPos);
+			const posKey = `${newPos[0]},${newPos[1]}`;
+
+			// Evitar verificar a mesma posição duas vezes
+			if (!checkedPositions.has(posKey)) {
+				checkedPositions.add(posKey);
+
+				if (
+					isWithinBounds(newPos) &&
+					!occupiedPositionsCache.has(posKey) &&
+					!neighbors.some(
+						(n) => n[0] === newPos[0] && n[1] === newPos[1]
+					)
+				) {
+					neighbors.push(newPos);
+				}
 			}
 		});
 	});
@@ -107,7 +254,8 @@ export const calculateResourceBonus = (
 	if (
 		!resourceSources ||
 		resourceSources.length === 0 ||
-		!civ.discoveredSources
+		!civ.discoveredSources ||
+		civ.discoveredSources.length === 0
 	) {
 		return 0;
 	}
@@ -163,6 +311,47 @@ export const calculateResourceBonus = (
 	return totalBonus;
 };
 
+// Encontra fontes de recursos próximas a uma civilização (versão otimizada)
+export const findNearbyResourceSources = (
+	civ: Civilization,
+	resourceSources: ResourceSource[],
+	maxDistance: number = 5
+): ResourceSource[] => {
+	// Se a civ não tiver territórios, retornar vazio
+	if (civ.territories.length === 0) return [];
+
+	// Conjunto para armazenar IDs únicos de fontes próximas
+	const nearbySourceIds = new Set<number>();
+
+	// Para limitar o número de territórios verificados em civs grandes
+	const MAX_TERRITORIES_TO_CHECK = 10;
+
+	// Selecionar territórios para verificar (todos se poucos, amostra se muitos)
+	const territoriesToCheck =
+		civ.territories.length > MAX_TERRITORIES_TO_CHECK
+			? civ.territories
+					.sort(() => 0.5 - Math.random())
+					.slice(0, MAX_TERRITORIES_TO_CHECK)
+			: civ.territories;
+
+	// Para cada território selecionado, verificar fontes próximas
+	territoriesToCheck.forEach((territory) => {
+		// Obter IDs de recursos próximos usando spatial hash
+		const nearbyIds = spatialHashResources.getNearby(
+			territory,
+			maxDistance
+		);
+
+		// Adicionar ao conjunto para garantir unicidade
+		nearbyIds.forEach((id) => nearbySourceIds.add(id));
+	});
+
+	// Mapear IDs para objetos ResourceSource
+	return Array.from(nearbySourceIds)
+		.map((id) => resourceSources[id])
+		.filter((source) => source !== undefined);
+};
+
 // Cria uma nova civilização
 export const createCivilization = (
 	id: number,
@@ -194,33 +383,6 @@ export const createCivilization = (
 	};
 };
 
-// Requisitos de população para cada estágio
-const STAGE_POPULATION_REQUIREMENTS = [
-	0, // PRIMITIVE: não há requisito
-	5000, // AGRICULTURAL: 5.000 habitantes
-	20000, // MEDIEVAL: 20.000 habitantes
-	100000, // INDUSTRIAL: 100.000 habitantes
-	500000, // MODERN: 500.000 habitantes
-];
-
-// Requisitos de recursos para cada estágio
-const STAGE_RESOURCE_REQUIREMENTS = [
-	0, // PRIMITIVE: não há requisito
-	500, // AGRICULTURAL: 500 recursos
-	2000, // MEDIEVAL: 2.000 recursos
-	10000, // INDUSTRIAL: 10.000 recursos
-	50000, // MODERN: 50.000 recursos
-];
-
-// Requisitos de idade para cada estágio (em turnos)
-const STAGE_AGE_REQUIREMENTS = [
-	0, // PRIMITIVE: não há requisito
-	30, // AGRICULTURAL: 30 turnos
-	100, // MEDIEVAL: 100 turnos
-	200, // INDUSTRIAL: 200 turnos
-	350, // MODERN: 350 turnos
-];
-
 // Calcular custo de expansão baseado no estágio e tamanho atual
 export const calculateExpansionCost = (civ: Civilization): number => {
 	// Base: 50 recursos
@@ -233,29 +395,11 @@ export const calculateExpansionCost = (civ: Civilization): number => {
 	return Math.floor(baseCost * stageFactor * sizeFactor);
 };
 
-// Atualiza uma civilização com base em suas características
-export const updateCivilization = (
-	civ: Civilization,
-	civilizations: Civilization[],
-	resourceSources: ResourceSource[] = []
-): Civilization => {
-	const newCiv = {
-		...civ,
-		// Garante que a propriedade territoryResources sempre exista
-		territoryResources: civ.territoryResources || {},
-		// Garante que a propriedade discoveredSources sempre exista
-		discoveredSources: civ.discoveredSources || [],
-		// Garante que as propriedades de produção e consumo existam
-		resourceProduction: 0, // Será calculado nesta função
-		resourceConsumption: 0, // Será calculado nesta função
-	};
+// Função para atualizar a população de uma civilização
+export const updatePopulation = (civ: Civilization): Civilization => {
+	const newCiv = structuredClone(civ);
 
-	// Envelhecer a civilização
-	newCiv.age += 1;
-
-	// ATUALIZAÇÃO DE POPULAÇÃO
 	// Capacidade de suporte com base no número de territórios e estágio tecnológico
-	// Estágios mais avançados permitem maior densidade populacional
 	const techFactor = 0.5 + newCiv.stage * 0.5; // 0.5 para primitivo, 2.5 para moderno
 	const carryingCapacity = Math.min(
 		newCiv.territories.length * MAX_POPULATION_PER_TERRITORY * techFactor,
@@ -263,44 +407,30 @@ export const updateCivilization = (
 	);
 
 	// CÁLCULO DA TAXA DE NATALIDADE EFETIVA
-	// A taxa diminui à medida que a civilização fica mais avançada (modelando taxa de fertilidade mais baixa em sociedades modernas)
 	const modernizationFactor = 1 - newCiv.stage * 0.05;
-
-	// Fator de densidade populacional (diminui o crescimento quando se aproxima da capacidade)
 	const densityFactor = Math.max(0, 1 - newCiv.population / carryingCapacity);
-
-	// Fator de recursos (escassez afeta negativamente a natalidade)
 	const resourceFactor = Math.min(
 		1,
 		newCiv.resourceLevel / (newCiv.population / 1000) / 10
 	);
 
-	// Taxa efetiva de natalidade
 	const effectiveBirthRate =
 		newCiv.birthRate * modernizationFactor * densityFactor * resourceFactor;
 
 	// CÁLCULO DA TAXA DE MORTALIDADE EFETIVA
-	// Base da mortalidade que diminui com o avanço tecnológico
-	const baseMortalityReduction = newCiv.stage * 0.15; // Redução de até 60% no estágio moderno
-
-	// Fator de recursos (escassez aumenta a mortalidade)
+	const baseMortalityReduction = newCiv.stage * 0.15;
 	const resourceMortalityFactor = Math.max(
 		1,
 		1.5 - newCiv.resourceLevel / (newCiv.population / 500)
 	);
-
-	// Fator de conflitos (mais conflitos = maior mortalidade)
 	const recentConflictFactor = Math.min(2, 1 + newCiv.conflictCount * 0.001);
-
-	// Fator de superpopulação (mortalidade aumenta se próximo da capacidade máxima)
 	const overpopulationFactor =
 		newCiv.population > carryingCapacity * 0.8
 			? 1 + (newCiv.population / carryingCapacity - 0.8) * 2
 			: 1;
 
-	// Taxa efetiva de mortalidade
 	const effectiveMortalityRate = Math.max(
-		0.005, // Mínimo de 0.5% mesmo em condições ideais
+		0.005,
 		newCiv.mortalityRate *
 			(1 - baseMortalityReduction) *
 			resourceMortalityFactor *
@@ -309,59 +439,51 @@ export const updateCivilization = (
 	);
 
 	// CÁLCULO DA ALTERAÇÃO DE POPULAÇÃO
-	// Crescimento populacional (nascimentos)
 	const populationGrowth = Math.floor(newCiv.population * effectiveBirthRate);
-
-	// Declínio populacional (mortes)
 	const populationDecline = Math.floor(
 		newCiv.population * effectiveMortalityRate
 	);
-
-	// Alteração líquida na população
 	const netPopulationChange = populationGrowth - populationDecline;
 
-	// Atualizar população com limite na capacidade de suporte
+	// Atualizar população
 	newCiv.population = Math.max(
-		1, // Garantir ao menos 1 habitante para evitar extinção completa
-		Math.min(
-			newCiv.population + netPopulationChange,
-			carryingCapacity // Limite baseado no território e tecnologia
-		)
+		1,
+		Math.min(newCiv.population + netPopulationChange, carryingCapacity)
 	);
 
-	// Atualizar as taxas de natalidade e mortalidade de base para a próxima iteração
-	// (pequenos ajustes que refletem mudanças culturais e ambientais ao longo do tempo)
-
-	// Para natalidade: tende a diminuir com o progresso, mas flutua conforme outros fatores
+	// Atualizar taxas de natalidade e mortalidade
 	if (resourceFactor < 0.8 || densityFactor < 0.7) {
-		// Condições difíceis: declínio na taxa de natalidade de base
 		newCiv.birthRate = Math.max(0.01, newCiv.birthRate * 0.99);
 	} else if (newCiv.resourceProduction > newCiv.resourceConsumption * 1.5) {
-		// Prosperidade: leve aumento na taxa de natalidade
 		newCiv.birthRate = Math.min(0.04, newCiv.birthRate * 1.01);
 	}
 
-	// Para mortalidade: tende a diminuir com o progresso, mas aumenta com conflitos prolongados
 	if (recentConflictFactor > 1.3) {
-		// Muitos conflitos recentes: aumenta taxa de mortalidade base
 		newCiv.mortalityRate = Math.min(0.03, newCiv.mortalityRate * 1.02);
 	} else if (resourceMortalityFactor > 1.2) {
-		// Escassez de recursos: aumenta taxa de mortalidade base
 		newCiv.mortalityRate = Math.min(0.025, newCiv.mortalityRate * 1.01);
 	} else {
-		// Progresso natural: diminui levemente a taxa de mortalidade base ao longo do tempo
 		newCiv.mortalityRate = Math.max(0.005, newCiv.mortalityRate * 0.995);
 	}
 
-	// ATUALIZAÇÃO DO SISTEMA DE RECURSOS
-	// 1. Calcular o limite máximo de recursos baseado no território
+	return newCiv;
+};
+
+// Função para atualizar os recursos de uma civilização
+export const updateResources = (
+	civ: Civilization,
+	resourceSources: ResourceSource[]
+): Civilization => {
+	const newCiv = structuredClone(civ);
+
+	// Calcular capacidade máxima de recursos
 	const resourceCapacity =
 		newCiv.territories.length * MAX_RESOURCES_PER_TERRITORY;
 
-	// 2. Produção de recursos: cada território produz recursos
+	// Inicializar a produção de recursos
 	let totalResourceProduction = 0;
 
-	// Inicializar territoryResources para novos territórios
+	// Garantir que novos territórios tenham recursos inicializados
 	newCiv.territories.forEach((territory) => {
 		const territoryKey = territory.toString();
 		if (newCiv.territoryResources[territoryKey] === undefined) {
@@ -370,80 +492,82 @@ export const updateCivilization = (
 		}
 	});
 
-	// Calcular produção de recursos por território com base na fertilidade
+	// Calcular produção por território
 	for (const territory of newCiv.territories) {
 		const territoryKey = territory.toString();
 		const territoryFertility =
 			newCiv.territoryResources[territoryKey] /
 			MAX_RESOURCES_PER_TERRITORY;
 
-		// Produção baseia-se na fertilidade restante do território
+		// Calcular produção
 		const territoryProduction = Math.floor(
 			BASE_TERRITORY_PRODUCTION *
-				(0.5 + newCiv.stage * 0.2) * // Bônus de estágio
-				territoryFertility * // Fator de fertilidade
-				newCiv.resourceEfficiency // Eficiência de recursos
+				(0.5 + newCiv.stage * 0.2) *
+				territoryFertility *
+				newCiv.resourceEfficiency
 		);
 
 		totalResourceProduction += territoryProduction;
 
-		// Diminuir a fertilidade do território (esgotamento gradual)
+		// Aplicar esgotamento do território
 		newCiv.territoryResources[territoryKey] = Math.max(
-			MAX_RESOURCES_PER_TERRITORY * 0.2, // Mínimo de 20% de fertilidade
+			MAX_RESOURCES_PER_TERRITORY * 0.2,
 			newCiv.territoryResources[territoryKey] *
 				(1 - RESOURCE_DEPLETION_RATE * (0.5 + newCiv.stage * 0.1))
 		);
 	}
 
-	// 2.1 Adicionar bônus de produção de recursos com base nas fontes de recursos
+	// Adicionar bônus de fontes de recursos descobertas
 	const resourceBonus = calculateResourceBonus(newCiv, resourceSources);
 	totalResourceProduction += resourceBonus;
 
-	// Armazenar a produção total de recursos por tick
+	// Armazenar produção total
 	newCiv.resourceProduction = totalResourceProduction;
 
-	// 3. Consumo de recursos baseado na população
-	// Estágios mais avançados consomem mais recursos per capita
-	const consumptionFactor = 0.8 + newCiv.stage * 0.4; // 0.8 para primitivo, 2.4 para moderno
+	// Calcular consumo de recursos
+	const consumptionFactor = 0.8 + newCiv.stage * 0.4;
 	const resourceConsumption = Math.floor(
 		(newCiv.population / 1000) *
 			RESOURCE_CONSUMPTION_PER_1000_POP *
 			consumptionFactor
 	);
 
-	// Armazenar o consumo total de recursos por tick
+	// Armazenar consumo total
 	newCiv.resourceConsumption = resourceConsumption;
 
-	// 4. Calcular o balanço líquido de recursos
+	// Atualizar nível de recursos
 	const netResourceChange = totalResourceProduction - resourceConsumption;
 	newCiv.resourceLevel = Math.max(
 		0,
-		Math.min(
-			newCiv.resourceLevel + netResourceChange,
-			resourceCapacity // Limite baseado no território
-		)
+		Math.min(newCiv.resourceLevel + netResourceChange, resourceCapacity)
 	);
 
-	// VERIFICAÇÃO DE EVOLUÇÃO
-	// Verificar evolução para próximo estágio usando os requisitos definidos
+	return newCiv;
+};
+
+// Função para verificar e aplicar evolução ou regressão tecnológica
+export const updateEvolution = (civ: Civilization): Civilization => {
+	const newCiv = structuredClone(civ);
+
+	// Verificar evolução para próximo estágio
 	const nextStage = newCiv.stage + 1;
 
 	if (
-		nextStage <= CivilizationStage.MODERN && // Não pode evoluir além de MODERN
-		newCiv.age >= STAGE_AGE_REQUIREMENTS[nextStage] * 0.9 && // Um pouco de flexibilidade na idade
+		nextStage <= CivilizationStage.MODERN &&
+		newCiv.age >= STAGE_AGE_REQUIREMENTS[nextStage] * 0.9 &&
 		newCiv.resourceLevel >= STAGE_RESOURCE_REQUIREMENTS[nextStage] &&
 		newCiv.population >= STAGE_POPULATION_REQUIREMENTS[nextStage]
 	) {
-		// Consumir recursos para evolução tecnológica
+		// Consumir recursos para evolução
 		const evolutionCost = STAGE_RESOURCE_REQUIREMENTS[nextStage] * 0.5;
 		if (newCiv.resourceLevel >= evolutionCost) {
 			newCiv.resourceLevel -= evolutionCost;
 			newCiv.stage = nextStage as CivilizationStage;
-			newCiv.resourceEfficiency *= 1.1; // Aumentar eficiência de recursos ao evoluir
+			newCiv.resourceEfficiency *= 1.1;
 		}
 	}
 
-	// Verificar também possível regressão tecnológica
+	// Verificar possível regressão
 	if (
 		newCiv.stage > CivilizationStage.PRIMITIVE &&
 		(newCiv.population <
@@ -451,107 +575,175 @@ export const updateCivilization = (
 			newCiv.resourceLevel <
 				STAGE_RESOURCE_REQUIREMENTS[newCiv.stage] * 0.4)
 	) {
-		// Regride estágio com penalidade de recursos
 		newCiv.stage = (newCiv.stage - 1) as CivilizationStage;
 		newCiv.resourceLevel = Math.floor(newCiv.resourceLevel * 0.8);
-		newCiv.resourceEfficiency *= 0.9; // Diminuir eficiência ao regredir
+		newCiv.resourceEfficiency *= 0.9;
 	}
 
-	// EXPANSÃO TERRITORIAL E BUSCA POR RECURSOS
-	// Verificar expansão preferencial em direção a fontes de recursos
+	return newCiv;
+};
+
+// Função para verificar e aplicar expansão territorial
+export const updateExpansion = (
+	civ: Civilization,
+	civilizations: Civilization[],
+	resourceSources: ResourceSource[]
+): Civilization => {
+	const newCiv = structuredClone(civ);
+
+	// Verificar se deve expandir
 	const shouldExpand =
 		newCiv.resourceLevel > calculateExpansionCost(newCiv) &&
 		Math.random() < newCiv.expansionRate * (1 + newCiv.stage * 0.1);
 
-	if (shouldExpand) {
-		const availableNeighbors = getAvailableNeighbors(newCiv, civilizations);
-		let targetPosition: Vector2 | null = null;
+	if (!shouldExpand) return newCiv;
 
-		// Priorizar expansão em direção a fontes de recursos não descobertas, se existirem
-		if (resourceSources.length > 0 && availableNeighbors.length > 0) {
-			// Filtrar fontes não descobertas por esta civilização
-			const undiscoveredSources = resourceSources.filter(
-				(_, index) => !newCiv.discoveredSources.includes(index)
+	// Obter vizinhos disponíveis (otimizado)
+	const availableNeighbors = getAvailableNeighbors(newCiv, civilizations);
+	if (availableNeighbors.length === 0) return newCiv;
+
+	let targetPosition: Vector2 | null = null;
+
+	// Encontrar recursos próximos não descobertos (otimizado)
+	const nearbyResources = findNearbyResourceSources(
+		newCiv,
+		resourceSources,
+		10
+	);
+
+	// Filtrar apenas recursos não descobertos
+	const undiscoveredResources = nearbyResources.filter(
+		(source) =>
+			!newCiv.discoveredSources.includes(
+				resourceSources.findIndex(
+					(s) =>
+						s.position[0] === source.position[0] &&
+						s.position[1] === source.position[1]
+				)
+			)
+	);
+
+	// Se há recursos não descobertos próximos, tentar expandir em sua direção
+	if (undiscoveredResources.length > 0) {
+		// Escolher um recurso aleatório entre os 3 mais próximos
+		// (para adicionar variedade nas escolhas de expansão)
+		const closestResources = undiscoveredResources
+			.map((source) => {
+				// Encontrar distância mínima a qualquer território atual
+				let minDist = Infinity;
+				for (const territory of newCiv.territories) {
+					const dist = Math.sqrt(
+						Math.pow(territory[0] - source.position[0], 2) +
+							Math.pow(territory[1] - source.position[1], 2)
+					);
+					minDist = Math.min(minDist, dist);
+				}
+				return { source, distance: minDist };
+			})
+			.sort((a, b) => a.distance - b.distance)
+			.slice(0, Math.min(3, undiscoveredResources.length));
+
+		// Escolher um recurso aleatoriamente entre os mais próximos
+		const targetResource =
+			closestResources[
+				Math.floor(Math.random() * closestResources.length)
+			].source;
+
+		// Encontrar o melhor vizinho para chegar a este recurso
+		let bestNeighbor = null;
+		let bestDistance = Infinity;
+
+		for (const neighbor of availableNeighbors) {
+			const distance = Math.sqrt(
+				Math.pow(neighbor[0] - targetResource.position[0], 2) +
+					Math.pow(neighbor[1] - targetResource.position[1], 2)
 			);
 
-			if (undiscoveredSources.length > 0) {
-				// Encontrar a fonte mais próxima de qualquer território atual
-				let closestSource = null;
-				let minDistance = Infinity;
-
-				for (const source of undiscoveredSources) {
-					for (const territory of newCiv.territories) {
-						const distance = Math.sqrt(
-							Math.pow(territory[0] - source.position[0], 2) +
-								Math.pow(territory[1] - source.position[1], 2)
-						);
-
-						if (distance < minDistance) {
-							minDistance = distance;
-							closestSource = source;
-						}
-					}
-				}
-
-				// Se encontrou uma fonte próxima, tentar expandir em sua direção
-				if (closestSource) {
-					// Calcular o melhor vizinho para expandir em direção à fonte
-					let bestNeighbor = null;
-					let bestNeighborDistance = Infinity;
-
-					for (const neighbor of availableNeighbors) {
-						const distance = Math.sqrt(
-							Math.pow(
-								neighbor[0] - closestSource.position[0],
-								2
-							) +
-								Math.pow(
-									neighbor[1] - closestSource.position[1],
-									2
-								)
-						);
-
-						if (distance < bestNeighborDistance) {
-							bestNeighborDistance = distance;
-							bestNeighbor = neighbor;
-						}
-					}
-
-					// Se encontrou um vizinho adequado, expandir para lá
-					if (bestNeighbor) {
-						targetPosition = bestNeighbor;
-					}
-				}
+			if (distance < bestDistance) {
+				bestDistance = distance;
+				bestNeighbor = neighbor;
 			}
 		}
 
-		// Se não encontrou um alvo específico, usar a lógica padrão
-		if (!targetPosition && availableNeighbors.length > 0) {
-			const randomIndex = Math.floor(
-				Math.random() * availableNeighbors.length
-			);
-			targetPosition = availableNeighbors[randomIndex];
-		}
-
-		// Realizar a expansão
-		if (targetPosition) {
-			// Adicionar novo território
-			newCiv.territories.push(targetPosition);
-			newCiv.size = newCiv.territories.length;
-
-			// Inicializar recursos do novo território
-			const newTerritoryKey = targetPosition.toString();
-			newCiv.territoryResources[newTerritoryKey] =
-				MAX_RESOURCES_PER_TERRITORY;
-
-			// Custo de expansão baseado no estágio e tamanho
-			const expansionCost = calculateExpansionCost(newCiv);
-			newCiv.resourceLevel = Math.max(
-				0,
-				newCiv.resourceLevel - expansionCost
-			);
+		if (bestNeighbor) {
+			targetPosition = bestNeighbor;
 		}
 	}
+
+	// Se não escolheu um alvo específico, escolher aleatoriamente
+	if (!targetPosition) {
+		// Limitar número de vizinhos considerados para melhorar performance
+		const candidateNeighbors =
+			availableNeighbors.length > 10
+				? availableNeighbors
+						.sort(() => 0.5 - Math.random())
+						.slice(0, 10)
+				: availableNeighbors;
+
+		const randomIndex = Math.floor(
+			Math.random() * candidateNeighbors.length
+		);
+		targetPosition = candidateNeighbors[randomIndex];
+	}
+
+	// Realizar a expansão
+	if (targetPosition) {
+		// Adicionar novo território
+		newCiv.territories.push(targetPosition);
+		newCiv.size = newCiv.territories.length;
+
+		// Inicializar recursos do novo território
+		const newTerritoryKey = targetPosition.toString();
+		newCiv.territoryResources[newTerritoryKey] =
+			MAX_RESOURCES_PER_TERRITORY;
+
+		// Custo de expansão
+		const expansionCost = calculateExpansionCost(newCiv);
+		newCiv.resourceLevel = Math.max(
+			0,
+			newCiv.resourceLevel - expansionCost
+		);
+	}
+
+	return newCiv;
+};
+
+// Função principal que atualiza uma civilização (refatorada)
+export const updateCivilization = (
+	civ: Civilization,
+	civilizations: Civilization[],
+	resourceSources: ResourceSource[] = []
+): Civilization => {
+	// Criar nova instância da civilização com clone profundo
+	let newCiv = structuredClone(civ);
+
+	// Garantir que as propriedades sempre existam
+	if (!newCiv.territoryResources) {
+		newCiv.territoryResources = {};
+	}
+
+	if (!newCiv.discoveredSources) {
+		newCiv.discoveredSources = [];
+	}
+
+	// Resetar contadores de produção e consumo
+	newCiv.resourceProduction = 0;
+	newCiv.resourceConsumption = 0;
+
+	// Incrementar idade
+	newCiv.age += 1;
+
+	// Atualizar população
+	newCiv = updatePopulation(newCiv);
+
+	// Atualizar recursos
+	newCiv = updateResources(newCiv, resourceSources);
+
+	// Verificar evolução
+	newCiv = updateEvolution(newCiv);
+
+	// Verificar expansão
+	newCiv = updateExpansion(newCiv, civilizations, resourceSources);
 
 	return newCiv;
 };
